@@ -1,0 +1,30 @@
+name: PluginReloader
+main: com.patschgo.pluginreloader.PluginReloaderPlugin
+version: 1.2.1
+author: patschgo
+commands:
+  plreload:
+    description: Reload plugins individually or sequentially with timeout protection
+    usage: /plreload [pluginName|number|start-end|cancel]
+    permission: pluginreloader.reload
+  plcheck:
+    description: Load newly added plugin jars without restart or /reload
+    usage: /plcheck
+    permission: pluginreloader.check
+  plr:
+    description: Reload PluginReloader from disk (for swapped jar updates)
+    usage: /plr
+    permission: pluginreloader.reload
+permissions:
+  pluginreloader.*:
+    description: Grants all PluginReloader permissions
+    default: op
+    children:
+      pluginreloader.reload: true
+      pluginreloader.check: true
+  pluginreloader.reload:
+    description: Allows plugin reloading (single or sequential) and cancellation
+    default: op
+  pluginreloader.check:
+    description: Allows loading new plugin jars via /plcheck
+    default: op
