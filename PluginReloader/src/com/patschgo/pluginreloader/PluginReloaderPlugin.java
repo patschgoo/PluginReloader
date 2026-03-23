@@ -7,8 +7,10 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 import java.util.jar.JarEntry;
@@ -31,9 +33,11 @@ public class PluginReloaderPlugin extends JavaPlugin {
     private int reloadTaskId = -1;
     private int pluginTimeoutSeconds = 30;
     private int defaultReloadIntervalTicks = 20;
+    private boolean autoReloadModifiedPlugins = true;
     private Properties config = new Properties();
     private File configFile;
     private final Set<String> lastPresentPluginNames = new HashSet<String>();
+    private final Map<String, String> lastSeenJarFingerprints = new HashMap<String, String>();
     private boolean hasRunPlcheck = false;
 
     @Override
@@ -564,7 +568,9 @@ public class PluginReloaderPlugin extends JavaPlugin {
 
         List<PluginCandidate> candidates = new ArrayList<PluginCandidate>();
         Set<String> presentPluginNames = new HashSet<String>();
+        Map<String, String> currentJarFingerprints = new HashMap<String, String>();
         int reEnabledCount = 0;
+        int modifiedCount = 0;
         for (int i = 0; i < files.length; i++) {
             File file = files[i];
             if (file == null || !file.isFile() || !file.getName().toLowerCase().endsWith(".jar")) {
@@ -576,10 +582,41 @@ public class PluginReloaderPlugin extends JavaPlugin {
                 continue;
             }
 
-            presentPluginNames.add(candidate.name.toLowerCase());
+            String pluginKey = candidate.name.toLowerCase();
+            presentPluginNames.add(pluginKey);
+            currentJarFingerprints.put(pluginKey, buildJarFingerprint(candidate.file));
 
             Plugin existing = pluginManager.getPlugin(candidate.name);
             if (existing != null) {
+                String runningVersion = existing.getDescription() == null ? null : existing.getDescription().getVersion();
+                boolean versionChanged = runningVersion != null && candidate.version != null
+                        && !runningVersion.equals(candidate.version);
+                boolean fileChangedSinceLastCheck = false;
+                if (hasRunPlcheck) {
+                    String previousFingerprint = lastSeenJarFingerprints.get(pluginKey);
+                    String currentFingerprint = currentJarFingerprints.get(pluginKey);
+                    fileChangedSinceLastCheck = previousFingerprint != null && currentFingerprint != null
+                            && !previousFingerprint.equals(currentFingerprint);
+                }
+
+                if (versionChanged || fileChangedSinceLastCheck) {
+                    modifiedCount++;
+                    if (autoReloadModifiedPlugins) {
+                        if (tryAutoReloadModifiedPlugin(pluginManager, existing, sender)) {
+                            reEnabledCount++;
+                        }
+                    } else {
+                        if (versionChanged) {
+                            sender.sendMessage(ChatColor.YELLOW + "Modified plugin detected: "
+                                    + existing.getDescription().getName() + " (running " + runningVersion
+                                    + ", jar " + candidate.version + "). Reload needed.");
+                        } else {
+                            sender.sendMessage(ChatColor.YELLOW + "Modified plugin detected: "
+                                    + existing.getDescription().getName() + " (jar file changed on disk). Reload needed.");
+                        }
+                    }
+                }
+
                 if (!existing.isEnabled()) {
                     try {
                         pluginManager.enablePlugin(existing);
@@ -596,22 +633,8 @@ public class PluginReloaderPlugin extends JavaPlugin {
             candidates.add(candidate);
         }
 
-        int addedSinceLastCheck = 0;
-        int removedSinceLastCheck = 0;
-        if (hasRunPlcheck) {
-            for (String name : presentPluginNames) {
-                if (!lastPresentPluginNames.contains(name)) {
-                    addedSinceLastCheck++;
-                }
-            }
-            for (String name : lastPresentPluginNames) {
-                if (!presentPluginNames.contains(name)) {
-                    removedSinceLastCheck++;
-                }
-            }
-        }
-
         int disabledRemovedCount = 0;
+        int removedListedCount = 0;
         Plugin[] loadedPlugins = pluginManager.getPlugins();
         String selfName = getDescription().getName();
         for (int i = 0; i < loadedPlugins.length; i++) {
@@ -625,26 +648,30 @@ public class PluginReloaderPlugin extends JavaPlugin {
                 continue;
             }
 
-            if (!presentPluginNames.contains(loadedName.toLowerCase()) && loadedPlugin.isEnabled()) {
-                try {
-                    pluginManager.disablePlugin(loadedPlugin);
-                    disabledRemovedCount++;
-                    sender.sendMessage(ChatColor.YELLOW + "Disabled removed plugin: " + loadedName);
-                } catch (Throwable t) {
-                    sender.sendMessage(ChatColor.RED + "Failed to disable removed plugin " + loadedName + ": "
-                            + t.getClass().getSimpleName());
+            if (!presentPluginNames.contains(loadedName.toLowerCase())) {
+                if (loadedPlugin.isEnabled()) {
+                    try {
+                        pluginManager.disablePlugin(loadedPlugin);
+                        disabledRemovedCount++;
+                        sender.sendMessage(ChatColor.YELLOW + "Disabled removed plugin: " + loadedName);
+                    } catch (Throwable t) {
+                        sender.sendMessage(ChatColor.RED + "Failed to disable removed plugin " + loadedName + ": "
+                                + t.getClass().getSimpleName());
+                    }
+                } else {
+                    // Still listed but already disabled and missing on disk.
+                    removedListedCount++;
                 }
             }
         }
 
         if (candidates.isEmpty()) {
             sender.sendMessage(ChatColor.GREEN + "No new plugin jars to load.");
-            sender.sendMessage(ChatColor.GOLD + "Plugin check complete. Re-enabled: " + reEnabledCount
-                    + ". Disabled removed plugins: " + disabledRemovedCount
-                    + ". Added since last check: " + addedSinceLastCheck
-                    + ". Removed since last check: " + removedSinceLastCheck + ".");
+            sendPluginCheckSummary(sender, removedListedCount, modifiedCount, disabledRemovedCount, reEnabledCount);
             lastPresentPluginNames.clear();
             lastPresentPluginNames.addAll(presentPluginNames);
+            lastSeenJarFingerprints.clear();
+            lastSeenJarFingerprints.putAll(currentJarFingerprints);
             hasRunPlcheck = true;
             return;
         }
@@ -706,19 +733,54 @@ public class PluginReloaderPlugin extends JavaPlugin {
             }
         }
 
-        sender.sendMessage(ChatColor.GOLD + "Plugin check complete. Loaded " + loadedCount
-                + ". Re-enabled: " + reEnabledCount
-                + ". Remaining unloaded: " + stillUnloaded
-                + ". Disabled removed plugins: " + disabledRemovedCount
-                + ". Added since last check: " + addedSinceLastCheck
-                + ". Removed since last check: " + removedSinceLastCheck + ".");
-        if (stillUnloaded > 0) {
+        int remainingUnloaded = stillUnloaded + removedListedCount;
+        sendPluginCheckSummary(sender, remainingUnloaded, modifiedCount, disabledRemovedCount, loadedCount + reEnabledCount);
+        if (remainingUnloaded > 0) {
             sender.sendMessage(ChatColor.YELLOW + "Some plugins may require missing dependencies or a full restart.");
         }
 
         lastPresentPluginNames.clear();
         lastPresentPluginNames.addAll(presentPluginNames);
+        lastSeenJarFingerprints.clear();
+        lastSeenJarFingerprints.putAll(currentJarFingerprints);
         hasRunPlcheck = true;
+    }
+
+    private void sendPluginCheckSummary(CommandSender sender, int remainingUnloaded, int modifiedCount,
+            int disabledCount, int enabledCount) {
+        sender.sendMessage(ChatColor.GOLD + "Plugin check complete.");
+        sender.sendMessage(ChatColor.GOLD + "Remaining Plugins unloaded: " + remainingUnloaded);
+        sender.sendMessage(ChatColor.GOLD + "Plugins modified: " + modifiedCount);
+        sender.sendMessage(ChatColor.GOLD + "Plugins disabled: " + disabledCount);
+        sender.sendMessage(ChatColor.GOLD + "Plugins enabled: " + enabledCount);
+    }
+
+    private String buildJarFingerprint(File jarFile) {
+        if (jarFile == null) {
+            return "";
+        }
+        return jarFile.length() + ":" + jarFile.lastModified();
+    }
+
+    private boolean tryAutoReloadModifiedPlugin(PluginManager pluginManager, Plugin existing, CommandSender sender) {
+        String pluginName = existing.getDescription().getName();
+        boolean wasEnabled = existing.isEnabled();
+
+        sender.sendMessage(ChatColor.YELLOW + "Modified plugin detected: " + pluginName
+                + " (autoReloadModifiedPlugins=true). Reloading now...");
+
+        try {
+            if (wasEnabled) {
+                pluginManager.disablePlugin(existing);
+            }
+            pluginManager.enablePlugin(existing);
+            sender.sendMessage(ChatColor.GREEN + "Auto-reloaded modified plugin: " + pluginName + ".");
+            return !wasEnabled;
+        } catch (Throwable t) {
+            sender.sendMessage(ChatColor.RED + "Failed to auto-reload modified plugin " + pluginName + ": "
+                    + t.getClass().getSimpleName());
+            return false;
+        }
     }
 
     private PluginCandidate readCandidate(File file) {
@@ -821,6 +883,7 @@ public class PluginReloaderPlugin extends JavaPlugin {
             config.load(in);
             String timeoutStr = config.getProperty("pluginTimeoutSeconds", "30");
             String intervalStr = config.getProperty("defaultReloadIntervalTicks", "20");
+            String autoReloadModifiedStr = config.getProperty("autoReloadModifiedPlugins", "true");
             try {
                 pluginTimeoutSeconds = Integer.parseInt(timeoutStr);
                 if (pluginTimeoutSeconds < 1) {
@@ -838,10 +901,13 @@ public class PluginReloaderPlugin extends JavaPlugin {
             } catch (NumberFormatException ex) {
                 defaultReloadIntervalTicks = 20;
             }
+
+            autoReloadModifiedPlugins = Boolean.parseBoolean(autoReloadModifiedStr);
         } catch (IOException ex) {
             System.out.println("[PluginReloader] Failed to load config: " + ex.getMessage());
             pluginTimeoutSeconds = 30;
             defaultReloadIntervalTicks = 20;
+            autoReloadModifiedPlugins = true;
         } finally {
             if (in != null) {
                 try {
@@ -864,6 +930,9 @@ public class PluginReloaderPlugin extends JavaPlugin {
             content.append("# defaultReloadIntervalTicks = delay between plugins during sequential/range reloads\n");
             content.append("# Tick meaning: 20 = 1 second, 40 = 2 seconds, 10 = 0.5 seconds\n");
             content.append("defaultReloadIntervalTicks=20\n");
+            content.append("\n");
+            content.append("# autoReloadModifiedPlugins = auto-reload already loaded plugins if their jar changed\n");
+            content.append("autoReloadModifiedPlugins=true\n");
             out.write(content.toString().getBytes("UTF-8"));
         } catch (IOException ex) {
             System.out.println("[PluginReloader] Failed to write config: " + ex.getMessage());
