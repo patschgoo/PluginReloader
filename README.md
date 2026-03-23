@@ -2,7 +2,7 @@
 
 A legacy CraftBukkit plugin that adds `/plreload` with timeout protection, single-plugin reload, cancellation, and `/plcheck` for hot-loading new jars.
 
-Current release: `v1.2.2`
+Current release: `v1.2.3`
 
 ## Commands
 
@@ -60,8 +60,9 @@ Current `/plcheck` summary output fields:
 
 **Plugin disable (`/pldisable <pluginName>`):**
 - Finds a loaded plugin by name (case-insensitive) and disables it
+- Calls the plugin's `onDisable()`, unregisters its listeners and commands, and marks it as disabled immediately without a server restart
 - Rejects disabling `PluginReloader` itself
-- Can be re-enabled with `/plreload <pluginName>` (reload does disable+enable)
+- Stays disabled until re-enabled by `/plcheck` (which re-enables all disabled plugins) or `/plreload <pluginName>`
 
 ## Configuration
 
@@ -96,7 +97,7 @@ bash ./build.sh
 Output:
 
 - `build/PluginReloader.jar`
-- release artifact example: `builds/PluginReloader-v1.2.2.jar`
+- release artifact example: `builds/PluginReloader-v1.2.3.jar`
 
 ## Install
 

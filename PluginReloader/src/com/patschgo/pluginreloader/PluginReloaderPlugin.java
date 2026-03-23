@@ -88,6 +88,21 @@ public class PluginReloaderPlugin extends JavaPlugin {
             return true;
         }
 
+        if ("pldisable".equalsIgnoreCase(command.getName())) {
+            if (!canUseDisable(sender)) {
+                sender.sendMessage(ChatColor.RED + "You do not have permission to use this command.");
+                return true;
+            }
+
+            if (args.length != 1) {
+                sender.sendMessage(ChatColor.YELLOW + "Usage: /pldisable <pluginName>");
+                return true;
+            }
+
+            disablePluginByName(sender, args[0]);
+            return true;
+        }
+
         if (!"plreload".equalsIgnoreCase(command.getName())) {
             return false;
         }
@@ -492,6 +507,57 @@ public class PluginReloaderPlugin extends JavaPlugin {
         }
 
         return true;
+    }
+
+    private boolean canUseDisable(CommandSender sender) {
+        if (sender.hasPermission("pluginreloader.disable")) {
+            return true;
+        }
+
+        if (sender instanceof Player) {
+            return ((Player) sender).isOp();
+        }
+
+        return true;
+    }
+
+    private void disablePluginByName(CommandSender sender, String pluginName) {
+        PluginManager pluginManager = getServer().getPluginManager();
+        Plugin[] installed = pluginManager.getPlugins();
+        Plugin target = null;
+
+        for (Plugin plugin : installed) {
+            if (plugin != null && plugin.getDescription().getName().equalsIgnoreCase(pluginName)) {
+                target = plugin;
+                break;
+            }
+        }
+
+        if (target == null) {
+            sender.sendMessage(ChatColor.RED + "Plugin '" + pluginName + "' not found. Check /plugins for the exact name.");
+            return;
+        }
+
+        String name = target.getDescription().getName();
+
+        if (name.equalsIgnoreCase(getDescription().getName())) {
+            sender.sendMessage(ChatColor.RED + "Cannot disable PluginReloader itself. Use /plr to self-reload instead.");
+            return;
+        }
+
+        if (!target.isEnabled()) {
+            sender.sendMessage(ChatColor.YELLOW + name + " is already disabled.");
+            return;
+        }
+
+        try {
+            pluginManager.disablePlugin(target);
+            sender.sendMessage(ChatColor.GREEN + "Disabled " + name + ". Use /plcheck or /plreload to re-enable it.");
+            getServer().broadcastMessage(ChatColor.YELLOW + name + " was disabled by " + getSenderName(sender) + ".");
+        } catch (Throwable t) {
+            sender.sendMessage(ChatColor.RED + "Failed to disable " + name + ": " + t.getClass().getSimpleName());
+            System.out.println("[PluginReloader] Failed to disable " + name + ": " + t.getMessage());
+        }
     }
 
     private void reloadSelf(CommandSender sender) {

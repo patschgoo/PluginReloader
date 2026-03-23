@@ -1,6 +1,6 @@
 name: PluginReloader
 main: com.patschgo.pluginreloader.PluginReloaderPlugin
-version: 1.2.2
+version: 1.2.3
 author: patschgo
 commands:
   plreload:
